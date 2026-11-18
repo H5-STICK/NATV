@@ -1,27 +1,36 @@
 
-name: Probar extraccion NATV
+name: Renovar NATV
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '17 */2 * * *'
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: renovar-natv
+  cancel-in-progress: false
 
 jobs:
-  probar:
+  renovar:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
-      - name: Instalar yt-dlp
-        run: |
-          python -m pip install --upgrade yt-dlp
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
 
-      - name: Obtener enlace NATV
+      - name: Instalar yt-dlp
+        run: python -m pip install --upgrade yt-dlp
+
+      - name: Obtener enlace y actualizar NATV
         shell: bash
         run: |
           set -euo pipefail
 
-          yt-dlp --no-config \
+          yt-dlp --no-config -f "best[protocol*=m3u8]/best" \
             --get-url \
             "https://www.dailymotion.com/video/x8dhap9" \
             > /tmp/natv-url.txt
@@ -29,22 +38,62 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           from urllib.parse import urlsplit
+          import urllib.request
 
           url = Path("/tmp/natv-url.txt").read_text().strip()
 
-          if not url.startswith("https://"):
-              raise SystemExit("ERROR: No se obtuvo una URL HTTPS")
-
           parsed = urlsplit(url)
+          host = parsed.hostname or ""
 
-          if not parsed.hostname or not parsed.hostname.endswith(".dmcdn.net"):
-              raise SystemExit("ERROR: El enlace no pertenece al CDN esperado")
+          if (
+              parsed.scheme != "https"
+              or not host.endswith(".dmcdn.net")
+              or not parsed.path.endswith(".m3u8")
+              or "\n" in url
+          ):
+              raise SystemExit("ERROR: URL HLS inesperada")
 
-          if not parsed.path.endswith(".m3u8"):
-              raise SystemExit("ERROR: No se obtuvo una lista M3U8")
+          req = urllib.request.Request(
+              url,
+              headers={"User-Agent": "Mozilla/5.0"}
+          )
 
-          print("EXTRACCION NATV CORRECTA")
-          print("Servidor:", parsed.hostname)
-          print("Ruta HLS obtenida correctamente")
-          print("La URL completa no se muestra por seguridad")
+          with urllib.request.urlopen(req, timeout=20) as response:
+              contenido = response.read(4096).decode("utf-8-sig")
+
+          if not contenido.startswith("#EXTM3U"):
+              raise SystemExit("ERROR: La URL no devuelve una lista HLS")
+
+          lista = (
+              "#EXTM3U\n"
+              "#EXT-X-VERSION:3\n"
+              '#EXT-X-STREAM-INF:BANDWIDTH=3000000,NAME="NATV"\n'
+              + url + "\n"
+          )
+
+          Path("NATV.m3u8").write_text(
+              lista, encoding="utf-8"
+          )
+
+          print("NATV.m3u8 generado correctamente")
+          print("Servidor:", host)
+          print("URL HLS comprobada")
           PY
+
+      - name: Publicar cambios en GitHub
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add NATV.m3u8
+
+          if git diff --cached --quiet; then
+            echo "NATV ya esta actualizado"
+          else
+            git commit -m "Renovar enlaces NATV automaticamente"
+            git push
+            echo "NATV actualizado correctamente en GitHub"
+          fi
