@@ -1,0 +1,50 @@
+
+name: Probar extraccion NATV
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probar:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Instalar yt-dlp
+        run: |
+          python -m pip install --upgrade yt-dlp
+
+      - name: Obtener enlace NATV
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          yt-dlp --no-config \
+            --get-url \
+            "https://www.dailymotion.com/video/x8dhap9" \
+            > /tmp/natv-url.txt
+
+          python - <<'PY'
+          from pathlib import Path
+          from urllib.parse import urlsplit
+
+          url = Path("/tmp/natv-url.txt").read_text().strip()
+
+          if not url.startswith("https://"):
+              raise SystemExit("ERROR: No se obtuvo una URL HTTPS")
+
+          parsed = urlsplit(url)
+
+          if not parsed.hostname or not parsed.hostname.endswith(".dmcdn.net"):
+              raise SystemExit("ERROR: El enlace no pertenece al CDN esperado")
+
+          if not parsed.path.endswith(".m3u8"):
+              raise SystemExit("ERROR: No se obtuvo una lista M3U8")
+
+          print("EXTRACCION NATV CORRECTA")
+          print("Servidor:", parsed.hostname)
+          print("Ruta HLS obtenida correctamente")
+          print("La URL completa no se muestra por seguridad")
+          PY
